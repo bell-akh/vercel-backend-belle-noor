@@ -1,0 +1,14 @@
+{
+  "name": "vercel-belle-noor-backend",
+  "version": "1.0.0",
+  "description": "Vercel serverless functions for Belle Noor context-based search",
+  "main": "extract-context.js",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "vercel": "^34.0.0"
+  }
+}
+
