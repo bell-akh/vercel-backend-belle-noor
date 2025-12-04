@@ -1,7 +1,10 @@
 {
-    "functions": {
-      "api/extract-context.js": {
-        "maxDuration": 10
-      }
+  "functions": {
+    "api/extract-context.js": {
+      "maxDuration": 10
+    },
+    "api/enrich-products.js": {
+      "maxDuration": 300
     }
   }
+}

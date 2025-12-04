@@ -43,9 +43,11 @@ export default async function handler(req, res) {
 
   try {
     const { 
-      batchSize = 10,  // Process products in batches
+      batchSize = 5,  // Process products in batches (reduced default to avoid timeout)
       dryRun = false,  // If true, don't update Firestore, just return keywords
-      productId = null // If provided, only process this product
+      productId = null, // If provided, only process this product
+      skip = 0, // Skip first N products (for resuming)
+      limit = null // Limit number of products to process
     } = req.body;
 
     const openaiApiKey = process.env.OPENAI_API_KEY;
@@ -68,61 +70,106 @@ export default async function handler(req, res) {
 
     // Get all products (or limit for testing)
     const snapshot = await productsQuery.get();
-    const allProducts = snapshot.docs.map(doc => ({
+    let allProducts = snapshot.docs.map(doc => ({
       id: doc.id,
       ...doc.data()
     }));
 
+    // Apply skip and limit if provided
+    if (skip > 0) {
+      allProducts = allProducts.slice(skip);
+      console.log(`Skipping first ${skip} products`);
+    }
+    if (limit && limit > 0) {
+      allProducts = allProducts.slice(0, limit);
+      console.log(`Limiting to ${limit} products`);
+    }
+
     console.log(`Found ${allProducts.length} products to process`);
 
-    // Process in batches
+    // Process in batches with parallel processing within each batch
     const results = {
       total: allProducts.length,
       processed: 0,
       updated: 0,
       errors: [],
-      dryRun
+      dryRun,
+      startTime: Date.now()
     };
 
+    // Process products in parallel batches (but limit concurrency to avoid rate limits)
+    const concurrency = 3; // Process 3 products in parallel
+    const maxTime = 250000; // 250 seconds (leave 50s buffer before 300s timeout)
+
     for (let i = 0; i < allProducts.length; i += batchSize) {
+      // Check if we're running out of time
+      const elapsed = Date.now() - results.startTime;
+      if (elapsed > maxTime) {
+        console.log(`Time limit approaching. Processed ${results.processed}/${allProducts.length} products.`);
+        return res.status(200).json({
+          success: true,
+          message: `Partial completion: Processed ${results.processed} of ${allProducts.length} products before timeout`,
+          results: {
+            ...results,
+            partial: true,
+            nextBatchStart: i
+          }
+        });
+      }
+
       const batch = allProducts.slice(i, i + batchSize);
       console.log(`Processing batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(allProducts.length / batchSize)}`);
 
-      for (const product of batch) {
-        try {
-          const metadata = await generateKeywords(
-            product.name || '',
-            product.desc || product.description || '',
-            product.category || '',
-            openaiApiKey
-          );
+      // Process batch with controlled concurrency
+      const batchPromises = [];
+      for (let j = 0; j < batch.length; j += concurrency) {
+        const concurrentBatch = batch.slice(j, j + concurrency);
+        const concurrentPromises = concurrentBatch.map(async (product) => {
+          try {
+            const metadata = await generateKeywords(
+              product.name || '',
+              product.desc || product.description || '',
+              product.category || '',
+              openaiApiKey
+            );
 
-          if (!dryRun) {
-            // Update product in Firestore with keywords, season, and bestFor
-            const updateData = {
-              keywords: metadata.keywords || [],
-              season: metadata.season || 'ALL_SEASON',
-              bestFor: metadata.bestFor || [],
-              keywordsUpdatedAt: admin.firestore.FieldValue.serverTimestamp()
-            };
-            await db.collection('shop_products').doc(product.id).update(updateData);
-            results.updated++;
+            if (!dryRun) {
+              // Update product in Firestore with keywords, season, and bestFor
+              const updateData = {
+                keywords: metadata.keywords || [],
+                season: metadata.season || 'ALL_SEASON',
+                bestFor: metadata.bestFor || [],
+                keywordsUpdatedAt: admin.firestore.FieldValue.serverTimestamp()
+              };
+              await db.collection('shop_products').doc(product.id).update(updateData);
+              results.updated++;
+            }
+
+            results.processed++;
+            return { success: true, productId: product.id };
+          } catch (error) {
+            console.error(`Error processing product ${product.id}:`, error);
+            results.errors.push({
+              productId: product.id,
+              productName: product.name,
+              error: error.message
+            });
+            return { success: false, productId: product.id, error: error.message };
           }
-
-          results.processed++;
-        } catch (error) {
-          console.error(`Error processing product ${product.id}:`, error);
-          results.errors.push({
-            productId: product.id,
-            productName: product.name,
-            error: error.message
-          });
+        });
+        
+        // Wait for concurrent batch to complete
+        await Promise.all(concurrentPromises);
+        
+        // Small delay between concurrent batches to avoid rate limits
+        if (j + concurrency < batch.length) {
+          await new Promise(resolve => setTimeout(resolve, 500));
         }
       }
 
-      // Add delay between batches to avoid rate limits
+      // Add delay between main batches
       if (i + batchSize < allProducts.length) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
 
