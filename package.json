@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vercel dev"
   },
-  "dependencies": {},
+  "dependencies": {
+      "firebase-admin": "^12.7.0"
+  },
   "devDependencies": {
     "vercel": "^34.0.0"
   }
