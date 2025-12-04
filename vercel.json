@@ -3,8 +3,5 @@
       "api/extract-context.js": {
         "maxDuration": 10
       }
-    },
-    "deploymentProtection": {
-      "production": false
     }
   }
